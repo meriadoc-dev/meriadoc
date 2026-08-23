@@ -4,7 +4,10 @@ pub mod output;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use crate::audit::AuditLogger;
+use crate::audit::builder::build_logger;
 use crate::config::MeriadocConfig;
 use crate::core::resolver::EntityResolver;
 use crate::core::spec::{JobSpec, ShellSpec, TaskSpec};
@@ -16,6 +19,7 @@ pub struct App {
     pub projects: Vec<Project>,
     /// Per-project validation caches, keyed by project root path.
     pub caches: HashMap<PathBuf, ValidationCache>,
+    pub audit_logger: Arc<AuditLogger>,
 }
 
 /// Context passed to closures during task iteration.
@@ -72,10 +76,13 @@ impl App {
             }
         }
 
+        let audit_logger = Arc::new(build_logger(&config.audit));
+
         Ok(Self {
             config,
             projects,
             caches,
+            audit_logger,
         })
     }
 

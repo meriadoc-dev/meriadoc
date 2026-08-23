@@ -72,6 +72,40 @@ fn run_with_config(
         .expect("failed to execute meriadoc")
 }
 
+/// Like `setup_config`, but with audit logging enabled and pointed at a file
+/// sink under `audit_log_path`.
+fn setup_config_with_audit(temp_dir: &TempDir, audit_log_path: &std::path::Path) -> TempDir {
+    let config_dir = TempDir::new().expect("failed to create config dir");
+    let cache_dir = config_dir.path().join("cache");
+    let config_path = config_dir.path().join("config.yaml");
+
+    let config_content = format!(
+        r#"discovery:
+  roots:
+    - path: {}
+      enabled: true
+  max_depth: 3
+  validate_on_discovery: false
+  spec_files:
+    - meriadoc.yaml
+cache:
+  enabled: false
+  dir: {}
+audit:
+  enabled: true
+  sinks:
+    - type: file
+      path: {}
+"#,
+        temp_dir.path().display(),
+        cache_dir.display(),
+        audit_log_path.display(),
+    );
+
+    fs::write(&config_path, config_content).expect("failed to write config");
+    config_dir
+}
+
 // ==================== Task Execution Tests ====================
 
 #[test]
@@ -2157,4 +2191,98 @@ fn test_help_flag() {
     assert!(stdout.contains("Usage"), "Should show usage");
     assert!(stdout.contains("run"), "Should list run command");
     assert!(stdout.contains("task"), "Should list task command");
+}
+
+// ==================== Audit Logging Tests ====================
+
+#[test]
+fn test_audit_log_records_task_run() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  build:
+    cmds:
+      - echo "building"
+"#,
+    );
+    let audit_log = temp_dir.path().join("audit.log");
+    let config_dir = setup_config_with_audit(&temp_dir, &audit_log);
+
+    let output = run_with_config(&temp_dir, &config_dir, &["run", "task", "build"]);
+    assert!(output.status.success());
+
+    let contents = fs::read_to_string(&audit_log).expect("audit log should exist");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 1, "expected exactly one audit line");
+
+    let event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(event["action"], "task.run");
+    assert_eq!(event["outcome"], "success");
+    assert_eq!(event["task"], "build");
+    assert_eq!(event["exit_code"], 0);
+    assert!(event["duration_ms"].is_number());
+}
+
+#[test]
+fn test_audit_log_records_dry_run() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  build:
+    cmds:
+      - echo "building"
+"#,
+    );
+    let audit_log = temp_dir.path().join("audit.log");
+    let config_dir = setup_config_with_audit(&temp_dir, &audit_log);
+
+    let output = run_with_config(
+        &temp_dir,
+        &config_dir,
+        &["run", "task", "build", "--dry-run"],
+    );
+    assert!(output.status.success());
+
+    let contents = fs::read_to_string(&audit_log).expect("audit log should exist");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 1, "expected exactly one audit line");
+
+    let event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(event["action"], "task.dry_run");
+    assert_eq!(event["outcome"], "dry_run");
+    assert_eq!(event["task"], "build");
+    assert!(event["exit_code"].is_null());
+    assert!(event["duration_ms"].is_null());
+}
+
+#[test]
+fn test_audit_disabled_writes_nothing() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  build:
+    cmds:
+      - echo "building"
+"#,
+    );
+    // setup_config leaves audit disabled (its default has no audit section).
+    let config_dir = setup_config(&temp_dir);
+
+    let output = run_with_config(&temp_dir, &config_dir, &["run", "task", "build"]);
+    assert!(output.status.success());
+
+    let audit_log = temp_dir.path().join("audit.log");
+    assert!(
+        !audit_log.exists(),
+        "audit log should not be created when audit is disabled"
+    );
 }

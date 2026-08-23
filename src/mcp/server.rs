@@ -3,6 +3,7 @@
 use std::io::{self, BufRead, Write};
 
 use crate::app::App;
+use crate::audit::CallerKind;
 use crate::core::validation::MeriadocError;
 use crate::mcp::handlers::McpHandlers;
 use crate::mcp::protocol::*;
@@ -102,7 +103,8 @@ impl McpServer {
             "tools/call" => {
                 match serde_json::from_value::<ToolCallParams>(request.params.clone()) {
                     Ok(params) => {
-                        let result = McpHandlers::call_tool(&mut self.app, &params);
+                        let result =
+                            McpHandlers::call_tool(&mut self.app, &params, CallerKind::McpStdio);
                         match serde_json::to_value(result) {
                             Ok(value) => JsonRpcResponse::success(request.id, value),
                             Err(e) => JsonRpcResponse::error(

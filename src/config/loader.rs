@@ -1,4 +1,4 @@
-use crate::config::spec::MeriadocConfig;
+use crate::config::spec::{AuditSinkConfig, MeriadocConfig};
 use crate::core::validation::MeriadocError;
 use serde_yaml;
 use std::fs;
@@ -24,7 +24,29 @@ impl ConfigLoader {
             config.cache.dir = Self::default_cache_base()?;
         }
 
+        // Normalize audit file sink paths: replace empty/relative with absolute default.
+        for sink in &mut config.audit.sinks {
+            if let AuditSinkConfig::File { path } = sink
+                && !path.is_absolute()
+            {
+                *path = Self::default_audit_log()?;
+            }
+        }
+
         Ok(config)
+    }
+
+    pub fn default_audit_log() -> Result<PathBuf, MeriadocError> {
+        let base = dirs::config_dir()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Could not resolve config directory",
+                )
+            })?
+            .join("meriadoc")
+            .join("audit.log");
+        Ok(base)
     }
 
     /// Returns the default absolute cache base directory: <config_dir>/meriadoc/cache
@@ -124,5 +146,77 @@ mod tests {
         // Path doesn't exist — loader creates default and returns it
         let config = ConfigLoader::load(Some(path)).unwrap();
         assert!(config.cache.dir.is_absolute());
+    }
+
+    #[test]
+    fn test_partial_discovery_config_fills_in_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            "discovery:\n  roots:\n    - path: /tmp/example\n      enabled: true\n",
+        );
+        let config = ConfigLoader::load(Some(path)).unwrap();
+        assert_eq!(config.discovery.roots.len(), 1);
+        assert_eq!(config.discovery.max_depth, 3);
+        assert!(config.discovery.validate_on_discovery);
+        assert_eq!(
+            config.discovery.spec_files,
+            vec!["meriadoc.yaml", "meriadoc.yml", "merry.yaml", "merry.yml"]
+        );
+    }
+
+    #[test]
+    fn test_partial_cache_config_dir_still_normalized() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(&dir, "cache:\n  enabled: true\n");
+        let config = ConfigLoader::load(Some(path)).unwrap();
+        assert!(config.cache.dir.is_absolute());
+    }
+
+    #[test]
+    fn test_partial_audit_config_sinks_default_to_file() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(&dir, "audit:\n  enabled: true\n");
+        let config = ConfigLoader::load(Some(path)).unwrap();
+        assert!(config.audit.enabled);
+        assert_eq!(config.audit.sinks.len(), 1);
+        match &config.audit.sinks[0] {
+            AuditSinkConfig::File { path } => assert!(path.is_absolute()),
+            other => panic!("expected default file sink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_readme_config_example_parses() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(
+            &dir,
+            r#"discovery:
+  roots:
+    - path: /home/user/projects
+      enabled: true
+  max_depth: 3
+  spec_files:
+    - meriadoc.yaml
+    - meriadoc.yml
+    - merry.yaml
+    - merry.yml
+
+cache:
+  enabled: true
+  dir: ~/.config/meriadoc/cache
+
+audit:
+  enabled: false
+  sinks:
+    - type: file
+      path: ~/.config/meriadoc/audit.log
+    - type: stderr
+"#,
+        );
+        let config = ConfigLoader::load(Some(path)).unwrap();
+        assert!(!config.discovery.roots.is_empty());
+        assert!(!config.audit.enabled);
+        assert_eq!(config.audit.sinks.len(), 2);
     }
 }
