@@ -2174,7 +2174,10 @@ fn test_version_flag() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("meriadoc"), "Should contain program name");
-    assert!(stdout.contains("0.1"), "Should contain version number");
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "Should contain the current version number"
+    );
 }
 
 // ==================== Help Flag Tests ====================
