@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 
 use crate::app::commands::run_task_for_mcp;
+use crate::audit::CallerKind;
 use crate::core::resolver::EntityResolver;
 use crate::core::spec::{RiskLevel, VarType};
 
@@ -163,7 +164,13 @@ pub async fn run_task(
 ) -> Json<RunTaskResponse> {
     let mut app = state.app.write();
 
-    match run_task_for_mcp(&mut app, &name, &payload.env, payload.dry_run) {
+    match run_task_for_mcp(
+        &mut app,
+        &name,
+        &payload.env,
+        payload.dry_run,
+        CallerKind::Api,
+    ) {
         Ok(output) => Json(RunTaskResponse {
             success: true,
             output,
@@ -184,7 +191,7 @@ pub async fn run_task_stream(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut app = state.app.write();
 
-    let result = run_task_for_mcp(&mut app, &name, &[], false);
+    let result = run_task_for_mcp(&mut app, &name, &[], false, CallerKind::Api);
 
     let mut events: Vec<Result<Event, Infallible>> = match result {
         Ok(output) => output

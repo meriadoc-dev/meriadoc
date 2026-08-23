@@ -39,3 +39,6 @@ futures = "0.3"
 
 # Better RwLock
 parking_lot = "0.12"
+
+# Audit logging
+chrono = "0.4"

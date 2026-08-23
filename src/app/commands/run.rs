@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
+use crate::audit::{AuditAction, AuditOutcome, CallerKind, build_event};
 use crate::cli::{CliPrompter, EditableVar, EnvPrompter, InteractiveMode, RunKind, RunOptions};
 use crate::config::spec::CacheConfig;
 use crate::core::execution::{
@@ -105,11 +106,60 @@ pub fn handle_run(
         ..Default::default()
     };
 
+    let start = std::time::Instant::now();
     let exit_code = match kind {
         RunKind::Task => RunActions::run_task(app, &name, &options, mode, &exec_options)?.exit_code,
         RunKind::Job => RunActions::run_job(app, &name, &options, mode, &exec_options)?,
         RunKind::Shell => RunActions::run_shell(app, &name, &options, mode)?,
     };
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    if matches!(kind, RunKind::Task)
+        && let Ok(resolved) = EntityResolver::resolve_task(&name, &app.projects)
+    {
+        let project_name = EntityResolver::project_name(resolved.project).to_string();
+        let project_root = resolved.project.root.clone();
+        let risk_level = resolved
+            .spec
+            .agent
+            .as_ref()
+            .map(|a| a.risk_level.as_str())
+            .unwrap_or("low");
+        let env_override_keys: Vec<String> = options.env.iter().map(|(k, _)| k.clone()).collect();
+        let event = if options.dry_run {
+            build_event(
+                CallerKind::Cli,
+                AuditAction::TaskDryRun,
+                &name,
+                &project_name,
+                &project_root,
+                risk_level,
+                None,
+                None,
+                env_override_keys,
+                AuditOutcome::DryRun,
+            )
+        } else {
+            let outcome = if exit_code == 0 {
+                AuditOutcome::Success
+            } else {
+                AuditOutcome::Failure
+            };
+            build_event(
+                CallerKind::Cli,
+                AuditAction::TaskRun,
+                &name,
+                &project_name,
+                &project_root,
+                risk_level,
+                Some(exit_code),
+                Some(duration_ms),
+                env_override_keys,
+                outcome,
+            )
+        };
+        app.audit_logger.emit(&event);
+    }
 
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -1012,6 +1062,7 @@ pub fn run_task_for_mcp(
     name: &str,
     cli_env: &[(String, String)],
     dry_run: bool,
+    caller: CallerKind,
 ) -> Result<String, MeriadocError> {
     // Build RunOptions from MCP parameters
     let options = RunOptions {
@@ -1038,13 +1089,85 @@ pub fn run_task_for_mcp(
         ..Default::default()
     };
 
-    // For dry-run, capture what would happen
+    // Resolve task metadata for audit (cheap, no I/O)
+    let (project_name, project_root, risk_level) =
+        if let Ok(resolved) = EntityResolver::resolve_task(name, &app.projects) {
+            (
+                EntityResolver::project_name(resolved.project).to_string(),
+                resolved.project.root.clone(),
+                resolved
+                    .spec
+                    .agent
+                    .as_ref()
+                    .map(|a| a.risk_level.as_str())
+                    .unwrap_or("low")
+                    .to_string(),
+            )
+        } else {
+            (String::new(), std::path::PathBuf::new(), "low".to_string())
+        };
+    let env_override_keys: Vec<String> = cli_env.iter().map(|(k, _)| k.clone()).collect();
+
+    // For dry-run, emit event and return preview
     if dry_run {
-        return run_task_dry_run_for_mcp(app, name, &options, mode);
+        let result = run_task_dry_run_for_mcp(app, name, &options, mode);
+        let event = build_event(
+            caller,
+            AuditAction::TaskDryRun,
+            name,
+            &project_name,
+            &project_root,
+            &risk_level,
+            None,
+            None,
+            env_override_keys,
+            AuditOutcome::DryRun,
+        );
+        app.audit_logger.emit(&event);
+        return result;
     }
 
     // Execute the task and capture output
-    let result = RunActions::run_task(app, name, &options, mode, &exec_options)?;
+    let start = std::time::Instant::now();
+    let run_result = RunActions::run_task(app, name, &options, mode, &exec_options);
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    let event = match &run_result {
+        Ok(result) => {
+            let outcome = if result.exit_code == 0 {
+                AuditOutcome::Success
+            } else {
+                AuditOutcome::Failure
+            };
+            build_event(
+                caller,
+                AuditAction::TaskRun,
+                name,
+                &project_name,
+                &project_root,
+                &risk_level,
+                Some(result.exit_code),
+                Some(duration_ms),
+                env_override_keys,
+                outcome,
+            )
+        }
+        Err(_) => build_event(
+            caller,
+            AuditAction::TaskRun,
+            name,
+            &project_name,
+            &project_root,
+            &risk_level,
+            Some(1),
+            Some(duration_ms),
+            env_override_keys,
+            AuditOutcome::Failure,
+        ),
+    };
+    app.audit_logger.emit(&event);
+
+    let result = run_result?;
 
     // Build response with captured output
     let mut response = String::new();

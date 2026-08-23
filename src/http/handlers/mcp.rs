@@ -3,6 +3,7 @@
 use axum::{Json, extract::State};
 use serde_json::Value;
 
+use crate::audit::CallerKind;
 use crate::mcp::handlers::McpHandlers;
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::mcp::types::ToolCallParams;
@@ -31,7 +32,7 @@ pub async fn handle_mcp(
                     arguments: std::collections::HashMap::new(),
                 });
             let mut app = state.app.write();
-            let result = McpHandlers::call_tool(&mut app, &params);
+            let result = McpHandlers::call_tool(&mut app, &params, CallerKind::McpHttp);
             serde_json::to_value(result).unwrap_or(Value::Null)
         }
         _ => serde_json::json!({"error": format!("Unknown method: {}", request.method)}),

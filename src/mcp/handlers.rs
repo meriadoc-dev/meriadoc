@@ -3,6 +3,7 @@
 use serde_json::{Value, json};
 
 use crate::app::App;
+use crate::audit::{AuditAction, AuditOutcome, CallerKind, build_event};
 use crate::core::resolver::EntityResolver;
 use crate::core::spec::RiskLevel;
 use crate::mcp::types::*;
@@ -150,11 +151,11 @@ impl McpHandlers {
     }
 
     /// Handle tools/call request
-    pub fn call_tool(app: &mut App, params: &ToolCallParams) -> ToolCallResult {
+    pub fn call_tool(app: &mut App, params: &ToolCallParams, caller: CallerKind) -> ToolCallResult {
         match params.name.as_str() {
             "meriadoc_list_tasks" => Self::handle_list_tasks(app),
-            "meriadoc_run_task" => Self::handle_run_task(app, params),
-            name if name.starts_with("task_") => Self::handle_direct_task(app, params),
+            "meriadoc_run_task" => Self::handle_run_task(app, params, caller),
+            name if name.starts_with("task_") => Self::handle_direct_task(app, params, caller),
             _ => ToolCallResult::error(format!("Unknown tool: {}", params.name)),
         }
     }
@@ -186,7 +187,11 @@ impl McpHandlers {
     }
 
     /// Run a task by name
-    fn handle_run_task(app: &mut App, params: &ToolCallParams) -> ToolCallResult {
+    fn handle_run_task(
+        app: &mut App,
+        params: &ToolCallParams,
+        caller: CallerKind,
+    ) -> ToolCallResult {
         // Extract task name
         let task_name = match params.arguments.get("task") {
             Some(Value::String(s)) => s.clone(),
@@ -211,11 +216,15 @@ impl McpHandlers {
             })
             .unwrap_or_default();
 
-        Self::execute_task(app, &task_name, &env_overrides, dry_run)
+        Self::execute_task(app, &task_name, &env_overrides, dry_run, caller)
     }
 
     /// Run a task directly via task_project_name tool
-    fn handle_direct_task(app: &mut App, params: &ToolCallParams) -> ToolCallResult {
+    fn handle_direct_task(
+        app: &mut App,
+        params: &ToolCallParams,
+        caller: CallerKind,
+    ) -> ToolCallResult {
         // Parse task name from tool name: task_project_taskname -> project:taskname
         let tool_suffix = params.name.strip_prefix("task_").unwrap_or(&params.name);
 
@@ -233,7 +242,7 @@ impl McpHandlers {
             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
 
-        Self::execute_task(app, &task_name, &env_overrides, false)
+        Self::execute_task(app, &task_name, &env_overrides, false, caller)
     }
 
     /// Check if a task requires approval before execution.
@@ -273,9 +282,34 @@ impl McpHandlers {
         task_name: &str,
         env_overrides: &[(String, String)],
         dry_run: bool,
+        caller: CallerKind,
     ) -> ToolCallResult {
         // Check approval BEFORE execution
         if let Some(confirmation_msg) = Self::check_approval_required(app, task_name) {
+            // Emit blocked audit event
+            if let Ok(resolved) = EntityResolver::resolve_task(task_name, &app.projects) {
+                let project_name = EntityResolver::project_name(resolved.project).to_string();
+                let project_root = resolved.project.root.clone();
+                let risk_level = resolved
+                    .spec
+                    .agent
+                    .as_ref()
+                    .map(|a| a.risk_level.as_str())
+                    .unwrap_or("low");
+                let event = build_event(
+                    caller,
+                    AuditAction::TaskBlocked,
+                    task_name,
+                    &project_name,
+                    &project_root,
+                    risk_level,
+                    None,
+                    None,
+                    env_overrides.iter().map(|(k, _)| k.clone()).collect(),
+                    AuditOutcome::Blocked,
+                );
+                app.audit_logger.emit(&event);
+            }
             return ToolCallResult::error(format!(
                 "APPROVAL REQUIRED: {}\n\n\
                  To proceed, confirm with the human and retry this tool call.",
@@ -283,7 +317,8 @@ impl McpHandlers {
             ));
         }
 
-        match crate::app::commands::run_task_for_mcp(app, task_name, env_overrides, dry_run) {
+        match crate::app::commands::run_task_for_mcp(app, task_name, env_overrides, dry_run, caller)
+        {
             Ok(output) => ToolCallResult::success(output),
             Err(e) => ToolCallResult::error(format!("Error: {}", e)),
         }
@@ -380,6 +415,7 @@ mod tests {
             projects: vec![project],
             config: crate::config::MeriadocConfig::default(),
             caches: std::collections::HashMap::new(),
+            audit_logger: std::sync::Arc::new(crate::audit::AuditLogger::disabled()),
         }
     }
 
@@ -515,7 +551,7 @@ mod tests {
             arguments: HashMap::new(),
         };
 
-        let result = McpHandlers::call_tool(&mut app, &params);
+        let result = McpHandlers::call_tool(&mut app, &params, CallerKind::McpStdio);
 
         assert!(result.is_error);
         assert!(result.content[0].text.contains("Unknown tool"));

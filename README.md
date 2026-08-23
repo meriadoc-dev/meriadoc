@@ -265,10 +265,10 @@ tasks:
 
 | Level | Description | Behavior |
 |-------|-------------|----------|
-| `low` | Safe, read-only operations | Auto-approved |
-| `medium` | Reversible changes | Auto-approved (logged) |
-| `high` | Significant changes | Requires approval |
-| `critical` | Destructive/irreversible | Requires explicit approval |
+| `low` | Safe, read-only operations | Auto-approved, audited |
+| `medium` | Reversible changes | Auto-approved, audited |
+| `high` | Significant changes | Requires approval, audited |
+| `critical` | Destructive/irreversible | Requires explicit approval, audited |
 
 ### Typed Environment Variables
 
@@ -311,9 +311,10 @@ Traditional task runners (Make, Just, Taskfile) lack:
 | Agent visibility control | No | Yes (`agent.enabled: false`) |
 | Typed parameters | No | Yes (string, choice, secret, etc.) |
 | Programmatic output | Limited | Yes (JSON, MCP) |
+| Audit logging | No | Yes (NDJSON, file or stderr) |
 | Web UI | No | Yes |
 
-Meriadoc provides capability-based security where agents can only execute predefined tasks with clear contracts and human oversight for risky operations.
+Meriadoc provides capability-based security where agents can only execute predefined tasks with clear contracts and human oversight for risky operations. Every execution — including blocked attempts — is logged with caller identity, risk level, exit code, and duration.
 
 ---
 
@@ -429,8 +430,57 @@ discovery:
 
 cache:
   enabled: true
-  dir: .meriadoc/cache
+  dir: ~/.config/meriadoc/cache
+
+audit:
+  enabled: false              # Off by default
+  sinks:
+    - type: file
+      path: ~/.config/meriadoc/audit.log   # NDJSON, one event per line
+    - type: stderr            # For containers — aggregated by Docker/k8s log drivers
 ```
+
+### Audit Logging
+
+When enabled, Meriadoc writes a structured NDJSON record for every task execution — including dry-runs and blocked attempts. Each record identifies the caller (`cli`, `api`, `mcp-stdio`, `mcp-http`), outcome, duration, and the keys (never values) of any environment overrides:
+
+```json
+{
+  "timestamp": "2026-06-02T14:30:00.123Z",
+  "schema_version": "1",
+  "caller": "mcp-stdio",
+  "action": "task.run",
+  "task": "deploy-staging",
+  "project": "myapp",
+  "project_root": "/home/user/projects/myapp",
+  "risk_level": "high",
+  "exit_code": 0,
+  "duration_ms": 1423,
+  "env_override_keys": ["ENV"],
+  "outcome": "success",
+  "meriadoc_version": "0.1.3",
+  "pid": 12345
+}
+```
+
+**Actions:**
+- `task.run` — normal execution
+- `task.dry_run` — dry-run preview (no process spawned)
+- `task.blocked` — execution denied by an approval gate; `exit_code` and `duration_ms` are null
+
+**Sinks:**
+
+| Type | Description | Best for |
+|------|-------------|----------|
+| `file` | Appends to an NDJSON file | Local development, persistent logs |
+| `stderr` | Writes to stderr | Containers, CI — captured by log aggregators |
+
+OTLP (OpenTelemetry) and webhook sinks are planned for a future release. The sink architecture is designed so adding them requires no changes to existing configuration or task specs.
+
+**Security notes:**
+- Environment variable **values** are never logged — only the key names appear in `env_override_keys`
+- Blocked events (`task.blocked`) are as important as successful runs for compliance — they are always logged when audit is enabled
+- Audit errors are non-fatal: a broken sink prints a warning to stderr but never aborts task execution
 
 ---
 

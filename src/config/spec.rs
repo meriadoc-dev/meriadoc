@@ -11,9 +11,14 @@ pub struct MeriadocConfig {
     /// Cache configuration
     #[serde(default)]
     pub cache: CacheConfig,
+
+    /// Audit logging configuration
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DiscoveryConfig {
     /// List of root directories to search for meriadoc.yaml
     pub roots: Vec<DiscoveryRoot>,
@@ -57,6 +62,7 @@ pub struct DiscoveryRoot {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CacheConfig {
     /// Enable or disable cache entirely
     pub enabled: bool,
@@ -73,4 +79,33 @@ impl Default for CacheConfig {
             dir: PathBuf::new(),
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuditConfig {
+    /// Audit logging is off by default to avoid surprising existing users.
+    pub enabled: bool,
+
+    /// Sinks to write audit events to.
+    pub sinks: Vec<AuditSinkConfig>,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            // Sentinel: ConfigLoader replaces empty path with the absolute default.
+            sinks: vec![AuditSinkConfig::File {
+                path: PathBuf::new(),
+            }],
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum AuditSinkConfig {
+    File { path: PathBuf },
+    Stderr,
 }

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Audit Logging**: structured NDJSON audit trail for every task execution — including dry-runs and blocked attempts — written to pluggable sinks (`file`, `stderr`). Enabled via `audit:` in the global config; off by default. Records caller identity, risk level, outcome, duration, and env override keys (never values).
+
+### Fixed
+
+- Global config sections (`discovery`, `cache`, `audit`) now accept partial YAML — omitting a field (e.g. `validate_on_discovery`, `spec_files`) falls back to its documented default instead of failing to parse. Previously any omitted field in a written-out section caused a hard `missing field` error, including in the config example shown in the README.
+- CLI `--dry-run` now emits a `task.dry_run` audit event, matching the MCP dry-run path and the documented "every execution, including dry-runs, is audited" behavior.
+- `docs/architecture.md`: corrected the "Project Root" section, which still described `tasks.yaml`/`jobs.yaml`/`shells.yaml` as root markers instead of the actual `meriadoc.yaml`/`meriadoc.yml`/`merry.yaml`/`merry.yml` spec files.
+
 ## [0.1.1] - 2026-03-15
 
 ### Fixed

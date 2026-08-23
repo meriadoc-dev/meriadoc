@@ -30,29 +30,27 @@ and is callable from any directory.
 
 ### 2.1 Installation
 
-Installation will be handled via a system package manager (e.g. Homebrew). The installer ensures:
-
-* The `meriadoc` (and optional `merry`) binary is available on `$PATH`
-* A user-local directory is created
-
-```text
-/Users/Alice/.meriadoc/
-```
-
-This directory is **owned by the tool**, not by projects.
+Install via Homebrew, the one-line install script, or `cargo install meriadoc`. The binary is available as both `meriadoc` and `merry`.
 
 ---
 
-### 2.2 Meriadoc Home Directory Structure
+### 2.2 Meriadoc Configuration Directory
+
+All user-level state lives under `~/.config/meriadoc/` (XDG-compliant):
 
 ```text
-~/.meriadoc/
-├── config.yaml          # Global user configuration
-├── state.yaml           # Tool-managed runtime state (optional)
-├── projects.yaml        # Registered project roots
-├── cache/               # Optional caches (repos, metadata)
-└── logs/
+~/.config/meriadoc/
+├── config.yaml          # Global user configuration (discovery roots, cache, audit)
+├── cache/               # Validation caches, one subdirectory per project
+│   └── myproject-a1b2c3d4/
+│       └── validation_cache.json
+├── env/                 # Saved environment values, per project/task
+│   └── myproject/
+│       └── deploy.env
+└── audit.log            # NDJSON audit log (when audit.enabled = true)
 ```
+
+The config directory location can be overridden with the `MERIADOC_CONFIG` environment variable (point it at the config file, not the directory).
 
 ---
 
@@ -60,26 +58,39 @@ This directory is **owned by the tool**, not by projects.
 
 ### 3.1 Global Configuration (`config.yaml`)
 
-The global configuration defines **where Meriadoc should look for projects** and user preferences.
-
-Example:
+The global configuration defines **how Meriadoc behaves on this machine** — where to find projects, how to cache validations, and where to write audit logs. It never describes tasks or commands.
 
 ```yaml
-version: "0.1"
-projects:
-  - ~/work/team-infra
-  - ~/work/image-tools
-  - ~/scripts
-ui:
-  theme: dark
-language: en
+discovery:
+  roots:
+    - path: ~/projects
+      enabled: true
+      name: personal       # optional human-friendly name
+  max_depth: 3
+  validate_on_discovery: true
+  spec_files:
+    - meriadoc.yaml
+    - meriadoc.yml
+    - merry.yaml
+    - merry.yml
+
+cache:
+  enabled: true
+  dir: ~/.config/meriadoc/cache   # always normalized to absolute
+
+audit:
+  enabled: false
+  sinks:
+    - type: file
+      path: ~/.config/meriadoc/audit.log
+    # - type: stderr
 ```
 
 Key points:
 
-* Project directories are **external** to Meriadoc
-* Meriadoc never requires projects to live under `~/.meriadoc/`
-* Each project directory is scanned for Meriadoc spec files
+* Project directories are **external** to Meriadoc — specs live in project repos
+* Meriadoc never modifies spec files automatically
+* Relative paths in `cache.dir` and audit `path` are normalized to absolute on load
 
 ---
 
@@ -89,12 +100,9 @@ A **project** is any directory registered in the global config that contains Mer
 
 ### 4.1 Project Root
 
-The project root is the directory containing one or more of:
-
-* `tasks.yaml`
-* `jobs.yaml`
-* `shells.yaml`
-* `meriadoc.yaml` (optional umbrella file)
+The project root is the directory containing at least one file matching
+`config.discovery.spec_files` (default: `meriadoc.yaml`, `meriadoc.yml`,
+`merry.yaml`, `merry.yml`).
 
 All relative paths in specs are resolved **from this root**.
 
@@ -123,9 +131,9 @@ This distinction supports both:
 
 ---
 
-## 6. Specification Files (v0.1)
+## 6. Specification Files
 
-All specs are versioned. Additive changes are expected; breaking changes require a version bump.
+Spec files live in the project directory (`meriadoc.yaml`, `meriadoc.yml`, `merry.yaml`, or `merry.yml`). They are the source of truth for what a project can do.
 
 ---
 
@@ -134,17 +142,21 @@ All specs are versioned. Additive changes are expected; breaking changes require
 A **Task** is the smallest execution unit.
 
 ```yaml
-version: "0.1"
-task:
-  name: string
-  description?: string
-  cmds: [string]
-  workdir?: string
-  env?: { string: EnvVar }
-  env_files?: [string]
-  preconditions?: [Condition]
-  on_failure?: FailurePolicy
-  docs?: string
+tasks:
+  mytask:
+    description?: string
+    cmds: [string]
+    workdir?: string            # relative to project root
+    env?: { string: EnvVar }
+    env_files?: [string]
+    preconditions?: [Condition]
+    on_failure?: FailurePolicy
+    docs?: string
+    agent?:
+      enabled: bool             # default: true — set false to hide from agents
+      risk_level: low|medium|high|critical   # default: low
+      confirmation?: string     # message shown before execution
+      requires_approval: bool   # default: false; true forces approval regardless of risk
 ```
 
 **Semantics**:
@@ -160,14 +172,17 @@ task:
 A **Job** is a composition of tasks.
 
 ```yaml
-version: "0.1"
-job:
-  name: string
-  description?: string
-  tasks: [string]
-  env?: { string: EnvVar }
-  env_files?: [string]
-  on_failure?: FailurePolicy
+jobs:
+  myjob:
+    description?: string
+    tasks: [string]
+    env?: { string: EnvVar }    # overrides task-level env
+    env_files?: [string]
+    on_failure?: FailurePolicy
+    agent?:
+      risk_level: low|medium|high|critical
+      requires_approval: bool
+      confirmation?: string
 ```
 
 **Semantics**:
@@ -182,14 +197,13 @@ job:
 A **Shell** creates an interactive session with a resolved context.
 
 ```yaml
-version: "0.1"
-shell:
-  name: string
-  description?: string
-  workdir?: string
-  env?: { string: EnvVar }
-  env_files?: [string]
-  init_cmds?: [string]
+shells:
+  dev:
+    description?: string
+    workdir?: string            # relative to project root; default: invocation dir
+    env?: { string: EnvVar }
+    env_files?: [string]
+    init_cmds?: [string]        # run before handing control to the user
 ```
 
 **Semantics**:
@@ -242,7 +256,81 @@ Controls error handling behavior.
 
 ---
 
-## 7. Architectural Principles
+## 7. Audit Logging
+
+### 7.1 Overview
+
+Every task execution — including dry-runs and blocked attempts — can be written to one or more **sinks** as a structured NDJSON record. Logging is disabled by default and never surprises existing users.
+
+### 7.2 AuditEvent Schema (v1)
+
+```json
+{
+  "timestamp": "2026-06-02T14:30:00.123Z",
+  "schema_version": "1",
+  "caller": "cli | api | mcp-stdio | mcp-http",
+  "action": "task.run | task.dry_run | task.blocked",
+  "task": "deploy-staging",
+  "project": "myapp",
+  "project_root": "/home/user/projects/myapp",
+  "risk_level": "low | medium | high | critical",
+  "exit_code": 0,
+  "duration_ms": 1423,
+  "env_override_keys": ["ENV"],
+  "outcome": "success | failure | blocked | dry_run",
+  "meriadoc_version": "0.1.3",
+  "pid": 12345
+}
+```
+
+`exit_code` and `duration_ms` are `null` for `task.blocked` and `task.dry_run`.
+Environment variable **values** are never logged — only key names appear in `env_override_keys`.
+
+### 7.3 Sink Architecture
+
+```
+AuditEvent
+    │
+    ▼
+AuditLogger (fan-out)
+    ├── FileSink   → ~/.config/meriadoc/audit.log  (NDJSON, O_APPEND)
+    ├── StderrSink → stderr                         (container-friendly)
+    └── (v2) OtlpSink → OpenTelemetry collector
+```
+
+The `AuditSink` trait is the extension boundary:
+
+```rust
+pub trait AuditSink: Send + Sync {
+    fn emit(&self, event: &AuditEvent) -> Result<(), AuditError>;
+}
+```
+
+Adding a new sink type (OTLP, webhook) requires implementing this trait and adding one match arm in `audit/builder.rs`. No other code changes.
+
+### 7.4 Caller Identity
+
+Each execution path sets its own `CallerKind`:
+
+| Entry point | `caller` value |
+|---|---|
+| `meriadoc task <name>` | `cli` |
+| `POST /api/tasks/:name/run` | `api` |
+| MCP stdio (`meriadoc serve`) | `mcp-stdio` |
+| MCP over HTTP (`meriadoc server`) | `mcp-http` |
+
+### 7.5 Non-Fatal Design
+
+Sink errors are printed to stderr but never propagate. A broken audit log never aborts task execution — the tool's primary job is running tasks, not managing logs.
+
+### 7.6 Concurrency Safety
+
+`FileSink` opens with `O_APPEND | O_CREAT` on each emit. POSIX guarantees write atomicity for writes ≤ `PIPE_BUF` (~4 KB) on Linux and macOS. NDJSON records for this schema are well under that limit, so concurrent processes writing to the same file produce valid, interleave-free records.
+
+---
+
+## 8. Architectural Principles
+
 
 * **Local-first**: no daemon, no cloud dependency
 * **Explicit roots**: all relative paths resolve from a project root
@@ -256,20 +344,23 @@ Controls error handling behavior.
 
 ---
 
-## 8. Future Extensions (Non-v1)
+## 10. Future Extensions
 
-Explicitly out of scope for v0.1:
+Planned:
 
-* Parallel execution
-* Task dependencies / DAGs
-* Includes / imports
-* Templating
-* Remote execution
+* **OTLP sink** — stream audit events to OpenTelemetry collectors (Datadog, Grafana, Honeycomb, etc.)
+* **Webhook sink** — HTTP POST audit events to Slack or custom endpoints
+* **Approval gates** — pause execution of high-risk tasks for human confirmation via webhook or CLI prompt
+* **Scoped shells** — allowlist/blocklist for commands available to agents in interactive shells
+* **Rate limiting** — cap how often agents can call specific tasks per hour
+* **Parallel execution** — run independent tasks in a job concurrently
+* **Task DAGs** — declare task dependencies instead of explicit ordering
 
-Schemas are designed to allow **additive** introduction of these features.
+All planned features are additive — existing spec files require no changes.
 
 ---
 
 ## 9. Summary
+
 
 Meriadoc treats scripts as **products**, not one-off commands. By anchoring execution to project roots and separating global configuration from project specs, it enables teams and individuals to share reliable, portable tooling without sacrificing local control.

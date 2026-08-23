@@ -1,6 +1,20 @@
 # Complete Project Example
 # This shows how a real project might use Meriadoc
 # A typical Node.js/TypeScript web application
+#
+# To enable audit logging, add this to ~/.config/meriadoc/config.yaml:
+#
+#   audit:
+#     enabled: true
+#     sinks:
+#       - type: file
+#         path: ~/.config/meriadoc/audit.log   # NDJSON, one event per line
+#       # For containers or CI, use stderr instead (or in addition):
+#       # - type: stderr
+#
+# Every task execution will then be recorded with caller, outcome, risk level,
+# duration, and env override keys (never values). Blocked executions are also
+# logged — these are critical for compliance.
 
 version: v1
 
