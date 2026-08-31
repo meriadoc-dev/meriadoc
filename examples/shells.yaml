@@ -10,8 +10,6 @@ shells:
 
   aws-dev:
     description: "AWS shell for development account"
-    agent:
-      risk_level: low
     env:
       AWS_PROFILE:
         type: string
@@ -33,8 +31,6 @@ shells:
 
   aws-uat:
     description: "AWS shell for UAT/staging account"
-    agent:
-      risk_level: medium
     env:
       AWS_PROFILE:
         type: string
@@ -58,10 +54,6 @@ shells:
 
   aws-prod:
     description: "AWS shell for production account"
-    agent:
-      risk_level: high
-      requires_approval: true
-      confirmation: "You are about to access the PRODUCTION AWS account. Proceed with caution."
     env:
       AWS_PROFILE:
         type: string
@@ -153,8 +145,6 @@ shells:
 
   k8s-dev:
     description: "Kubernetes shell for development cluster"
-    agent:
-      risk_level: low
     env:
       KUBECONFIG:
         type: string
@@ -176,10 +166,6 @@ shells:
 
   k8s-prod:
     description: "Kubernetes shell for production cluster"
-    agent:
-      risk_level: high
-      requires_approval: true
-      confirmation: "You are about to access the PRODUCTION Kubernetes cluster."
     env:
       KUBECONFIG:
         type: string
@@ -319,10 +305,6 @@ shells:
 
   db-prod-readonly:
     description: "Read-only production database shell"
-    agent:
-      risk_level: medium
-      requires_approval: true
-      confirmation: "Accessing production database in READ-ONLY mode."
     env:
       DATABASE_URL:
         type: string

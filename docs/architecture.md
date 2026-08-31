@@ -157,6 +157,12 @@ tasks:
       risk_level: low|medium|high|critical   # default: low
       confirmation?: string     # message shown before execution
       requires_approval: bool   # default: false; true forces approval regardless of risk
+    audit?:
+      log_env: [string]         # names of this task's env vars whose values (not just
+                                 # keys) are included in audit events when overridden.
+                                 # Applies regardless of caller (CLI, job, or MCP) —
+                                 # unlike agent:, which only affects MCP-mediated calls.
+                                 # Listing a var typed `secret` here is a validation error.
 ```
 
 **Semantics**:
@@ -179,16 +185,13 @@ jobs:
     env?: { string: EnvVar }    # overrides task-level env
     env_files?: [string]
     on_failure?: FailurePolicy
-    agent?:
-      risk_level: low|medium|high|critical
-      requires_approval: bool
-      confirmation?: string
 ```
 
 **Semantics**:
 
 * Tasks run sequentially in the order listed
 * Task names are resolved within the same project
+* Jobs are not exposed to AI agents — only tasks are callable over MCP. Agent risk annotations belong on the individual tasks, not the job.
 
 ---
 
@@ -212,6 +215,7 @@ shells:
 * Environment variables are injected
 * `init_cmds` run before handing control to the user
 * User may execute arbitrary commands until exit
+* Shells are not exposed to AI agents — like jobs, only tasks are callable over MCP
 
 ---
 
@@ -271,12 +275,14 @@ Every task execution — including dry-runs and blocked attempts — can be writ
   "caller": "cli | api | mcp-stdio | mcp-http",
   "action": "task.run | task.dry_run | task.blocked",
   "task": "deploy-staging",
+  "job": "deploy-production",
   "project": "myapp",
   "project_root": "/home/user/projects/myapp",
   "risk_level": "low | medium | high | critical",
   "exit_code": 0,
   "duration_ms": 1423,
   "env_override_keys": ["ENV"],
+  "logged_env": {},
   "outcome": "success | failure | blocked | dry_run",
   "meriadoc_version": "0.1.3",
   "pid": 12345
@@ -284,7 +290,14 @@ Every task execution — including dry-runs and blocked attempts — can be writ
 ```
 
 `exit_code` and `duration_ms` are `null` for `task.blocked` and `task.dry_run`.
-Environment variable **values** are never logged — only key names appear in `env_override_keys`.
+`job` is `null` for a standalone task run (CLI or MCP) and set to the job's name when the
+task ran as part of one — jobs are never MCP-callable, so this only ever reflects CLI usage.
+
+Environment variable values are never logged by default — only key names appear in
+`env_override_keys`. `logged_env` is the one, explicit exception: it holds the actual
+values, but *only* for the subset of overridden vars a task's `audit.log_env` opts in by
+name (see §6.1). It's always present (possibly `{}`), and validation makes it impossible
+to opt in a `type: secret` var — this can never be used to leak a secret.
 
 ### 7.3 Sink Architecture
 

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::core::spec::{AgentSpec, ConditionSpec, EnvVarSpec, FailurePolicySpec};
+use crate::core::spec::{AgentSpec, AuditSpec, ConditionSpec, EnvVarSpec, FailurePolicySpec};
 
 /*
 * -------------------------
@@ -39,4 +39,8 @@ pub struct TaskSpec {
 
     /// Agent configuration for AI tool exposure
     pub agent: Option<AgentSpec>,
+
+    /// Audit configuration — what gets recorded in the audit trail,
+    /// regardless of caller
+    pub audit: Option<AuditSpec>,
 }

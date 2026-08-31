@@ -3,7 +3,8 @@
 use serde_json::{Value, json};
 
 use crate::app::App;
-use crate::audit::{AuditAction, AuditOutcome, CallerKind, build_event};
+use crate::app::commands::build_task_audit_event;
+use crate::audit::{AuditAction, AuditOutcome, CallerKind};
 use crate::core::resolver::EntityResolver;
 use crate::core::spec::RiskLevel;
 use crate::mcp::types::*;
@@ -290,22 +291,17 @@ impl McpHandlers {
             if let Ok(resolved) = EntityResolver::resolve_task(task_name, &app.projects) {
                 let project_name = EntityResolver::project_name(resolved.project).to_string();
                 let project_root = resolved.project.root.clone();
-                let risk_level = resolved
-                    .spec
-                    .agent
-                    .as_ref()
-                    .map(|a| a.risk_level.as_str())
-                    .unwrap_or("low");
-                let event = build_event(
+                let event = build_task_audit_event(
+                    resolved.spec,
                     caller,
                     AuditAction::TaskBlocked,
                     task_name,
+                    None,
                     &project_name,
                     &project_root,
-                    risk_level,
                     None,
                     None,
-                    env_overrides.iter().map(|(k, _)| k.clone()).collect(),
+                    env_overrides,
                     AuditOutcome::Blocked,
                 );
                 app.audit_logger.emit(&event);
@@ -345,6 +341,7 @@ mod tests {
             on_failure: None,
             docs: None,
             agent: None,
+            audit: None,
         }
     }
 
@@ -364,6 +361,7 @@ mod tests {
                 confirmation: None,
                 requires_approval: false,
             }),
+            audit: None,
         }
     }
 
@@ -388,6 +386,7 @@ mod tests {
                 confirmation: confirmation.map(|s| s.to_string()),
                 requires_approval,
             }),
+            audit: None,
         }
     }
 

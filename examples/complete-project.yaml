@@ -404,10 +404,6 @@ jobs:
       ENV:
         type: string
         default: "prod"
-    agent:
-      risk_level: critical
-      requires_approval: true
-      confirmation: "PRODUCTION DEPLOYMENT: All tests passed. This will affect real users. Proceed?"
     on_failure:
       continue: false
       cmds:

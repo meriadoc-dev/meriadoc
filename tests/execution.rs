@@ -2289,3 +2289,214 @@ tasks:
         "audit log should not be created when audit is disabled"
     );
 }
+
+#[test]
+fn test_audit_log_env_includes_opted_in_value() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  search-docs:
+    audit:
+      log_env: [QUERY]
+    env:
+      QUERY:
+        type: string
+        required: true
+      OTHER:
+        type: string
+        default: "unrelated"
+    cmds:
+      - echo "searching for $QUERY"
+"#,
+    );
+    let audit_log = temp_dir.path().join("audit.log");
+    let config_dir = setup_config_with_audit(&temp_dir, &audit_log);
+
+    let output = run_with_config(
+        &temp_dir,
+        &config_dir,
+        &[
+            "run",
+            "task",
+            "search-docs",
+            "--env",
+            "QUERY=invoice deadline",
+            "--env",
+            "OTHER=changed",
+        ],
+    );
+    assert!(output.status.success());
+
+    let contents = fs::read_to_string(&audit_log).expect("audit log should exist");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 1, "expected exactly one audit line");
+
+    let event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(event["job"], serde_json::Value::Null);
+    assert_eq!(event["logged_env"]["QUERY"], "invoice deadline");
+    assert!(
+        event["logged_env"].get("OTHER").is_none(),
+        "OTHER was overridden but not opted into log_env, so its value should not be logged"
+    );
+    let override_keys: Vec<&str> = event["env_override_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(override_keys.contains(&"QUERY"));
+    assert!(
+        override_keys.contains(&"OTHER"),
+        "OTHER's key should still be recorded even though its value isn't"
+    );
+}
+
+#[test]
+fn test_audit_job_emits_one_event_per_task() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  lint:
+    cmds:
+      - echo "linting"
+  build:
+    cmds:
+      - echo "building"
+jobs:
+  ci:
+    tasks:
+      - lint
+      - build
+"#,
+    );
+    let audit_log = temp_dir.path().join("audit.log");
+    let config_dir = setup_config_with_audit(&temp_dir, &audit_log);
+
+    let output = run_with_config(&temp_dir, &config_dir, &["run", "job", "ci"]);
+    assert!(output.status.success());
+
+    let contents = fs::read_to_string(&audit_log).expect("audit log should exist");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected one audit line per task in the job, got: {contents}"
+    );
+
+    let events: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+
+    for event in &events {
+        assert_eq!(event["action"], "task.run");
+        assert_eq!(event["outcome"], "success");
+        assert_eq!(event["job"], "ci");
+    }
+    let task_names: Vec<&str> = events.iter().map(|e| e["task"].as_str().unwrap()).collect();
+    assert_eq!(task_names, vec!["lint", "build"]);
+}
+
+#[test]
+fn test_audit_job_dry_run_emits_per_task_events() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  lint:
+    cmds:
+      - echo "linting"
+  build:
+    cmds:
+      - echo "building"
+jobs:
+  ci:
+    tasks:
+      - lint
+      - build
+"#,
+    );
+    let audit_log = temp_dir.path().join("audit.log");
+    let config_dir = setup_config_with_audit(&temp_dir, &audit_log);
+
+    let output = run_with_config(&temp_dir, &config_dir, &["run", "job", "ci", "--dry-run"]);
+    assert!(output.status.success());
+
+    let contents = fs::read_to_string(&audit_log).expect("audit log should exist");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(lines.len(), 2, "expected one dry-run audit line per task");
+
+    for line in lines {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(event["action"], "task.dry_run");
+        assert_eq!(event["outcome"], "dry_run");
+        assert_eq!(event["job"], "ci");
+        assert!(event["exit_code"].is_null());
+        assert!(event["duration_ms"].is_null());
+    }
+}
+
+#[test]
+fn test_validate_rejects_log_env_unknown_var() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  search-docs:
+    audit:
+      log_env: [NOT_DECLARED]
+    cmds:
+      - echo hi
+"#,
+    );
+    let config_dir = setup_config(&temp_dir);
+
+    let output = run_with_config(&temp_dir, &config_dir, &["validate"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("error"),
+        "should report a validation error, got: {stdout}"
+    );
+    assert!(stdout.contains("NOT_DECLARED"));
+}
+
+#[test]
+fn test_validate_rejects_log_env_secret_var() {
+    let temp_dir = TempDir::new().unwrap();
+    create_spec_file(
+        &temp_dir,
+        r#"
+version: v1
+tasks:
+  search-docs:
+    audit:
+      log_env: [API_KEY]
+    env:
+      API_KEY:
+        type: secret
+        required: true
+    cmds:
+      - echo hi
+"#,
+    );
+    let config_dir = setup_config(&temp_dir);
+
+    let output = run_with_config(&temp_dir, &config_dir, &["validate"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("error"),
+        "should report a validation error, got: {stdout}"
+    );
+    assert!(stdout.contains("API_KEY"));
+    assert!(stdout.contains("secret"));
+}

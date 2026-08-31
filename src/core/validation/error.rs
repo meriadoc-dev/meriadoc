@@ -83,6 +83,14 @@ pub enum ValidationError {
         value: String,
         options: Vec<String>,
     },
+
+    #[error("task `{task}` audit.log_env references unknown env var `{var}`")]
+    AuditLogEnvUnknownVar { task: String, var: String },
+
+    #[error(
+        "task `{task}` audit.log_env cannot include `{var}` — it is typed `secret` and its value must never be logged"
+    )]
+    AuditLogEnvIsSecret { task: String, var: String },
 }
 
 #[derive(Debug)]

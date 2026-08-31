@@ -178,6 +178,7 @@ mod tests {
             on_failure: None,
             docs: None,
             agent: None,
+            audit: None,
         }
     }
 
