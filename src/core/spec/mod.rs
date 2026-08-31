@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod audit;
 pub mod condition;
 pub mod env;
 pub mod file;
@@ -7,6 +8,7 @@ pub mod shell;
 pub mod task;
 
 pub use agent::{AgentSpec, RiskLevel};
+pub use audit::AuditSpec;
 pub use condition::{ConditionSpec, FailurePolicySpec};
 pub use env::{EnvVarSpec, VarType};
 pub use file::SpecFile;

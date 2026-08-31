@@ -45,6 +45,29 @@ impl TaskValidator {
             }
         }
 
+        // audit.log_env must reference declared, non-secret env vars
+        if let Some(audit) = &task.audit {
+            for var in &audit.log_env {
+                match task.env.get(var) {
+                    None => result.push(
+                        &context,
+                        ValidationError::AuditLogEnvUnknownVar {
+                            task: task_name.to_string(),
+                            var: var.clone(),
+                        },
+                    ),
+                    Some(spec) if spec.var_type.is_sensitive() => result.push(
+                        &context,
+                        ValidationError::AuditLogEnvIsSecret {
+                            task: task_name.to_string(),
+                            var: var.clone(),
+                        },
+                    ),
+                    Some(_) => {}
+                }
+            }
+        }
+
         result
     }
 }
@@ -65,6 +88,7 @@ mod tests {
             on_failure: None,
             docs: None,
             agent: None,
+            audit: None,
         }
     }
 
@@ -180,5 +204,74 @@ mod tests {
 
         let result = TaskValidator::validate("my_task", &task);
         assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn test_audit_log_env_unknown_var_errors() {
+        use crate::core::spec::AuditSpec;
+
+        let mut task = make_task(vec!["echo hello"]);
+        task.audit = Some(AuditSpec {
+            log_env: vec!["NOT_DECLARED".to_string()],
+        });
+
+        let result = TaskValidator::validate("my_task", &task);
+        assert!(!result.is_ok());
+        let errors = result.errors();
+        assert!(errors.iter().any(|e| matches!(
+            &e.error,
+            ValidationError::AuditLogEnvUnknownVar { task, var }
+                if task == "my_task" && var == "NOT_DECLARED"
+        )));
+    }
+
+    #[test]
+    fn test_audit_log_env_secret_var_errors() {
+        use crate::core::spec::{AuditSpec, EnvVarSpec, VarType};
+
+        let mut task = make_task(vec!["echo hello"]);
+        task.env.insert(
+            "API_KEY".to_string(),
+            EnvVarSpec {
+                var_type: VarType::Secret,
+                default: None,
+                options: vec![],
+                required: true,
+            },
+        );
+        task.audit = Some(AuditSpec {
+            log_env: vec!["API_KEY".to_string()],
+        });
+
+        let result = TaskValidator::validate("my_task", &task);
+        assert!(!result.is_ok());
+        let errors = result.errors();
+        assert!(errors.iter().any(|e| matches!(
+            &e.error,
+            ValidationError::AuditLogEnvIsSecret { task, var }
+                if task == "my_task" && var == "API_KEY"
+        )));
+    }
+
+    #[test]
+    fn test_audit_log_env_valid_var_ok() {
+        use crate::core::spec::{AuditSpec, EnvVarSpec, VarType};
+
+        let mut task = make_task(vec!["echo hello"]);
+        task.env.insert(
+            "QUERY".to_string(),
+            EnvVarSpec {
+                var_type: VarType::String,
+                default: None,
+                options: vec![],
+                required: true,
+            },
+        );
+        task.audit = Some(AuditSpec {
+            log_env: vec!["QUERY".to_string()],
+        });
+
+        let result = TaskValidator::validate("my_task", &task);
+        assert!(result.is_ok());
     }
 }

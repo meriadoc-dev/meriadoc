@@ -606,6 +606,6 @@ mod tests {
 
         let result = EnvResolver::resolve(&inline, &[], &[], Path::new("/tmp"));
         assert!(result.is_ok());
-        assert!(result.unwrap().get("ENV").is_none());
+        assert!(!result.unwrap().contains_key("ENV"));
     }
 }

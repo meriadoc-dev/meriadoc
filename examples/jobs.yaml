@@ -192,6 +192,8 @@ tasks:
 
   ci-deploy-staging:
     description: "Deploy to staging"
+    agent:
+      risk_level: medium
     cmds:
       - echo "Deploying to staging..."
       - aws s3 sync ./dist s3://$STAGING_BUCKET --delete
@@ -206,6 +208,10 @@ tasks:
 
   ci-deploy-prod:
     description: "Deploy to production"
+    agent:
+      risk_level: high
+      requires_approval: true
+      confirmation: "This will deploy to PRODUCTION. All CI checks passed. Proceed?"
     cmds:
       - echo "Deploying to production..."
       - aws s3 sync ./dist s3://$PROD_BUCKET --delete
@@ -278,8 +284,6 @@ jobs:
       - ci-test
       - ci-build
       - ci-deploy-staging
-    agent:
-      risk_level: medium
     on_failure:
       continue: false
       cmds:
@@ -292,10 +296,6 @@ jobs:
       - ci-test
       - ci-build
       - ci-deploy-prod
-    agent:
-      risk_level: high
-      requires_approval: true
-      confirmation: "This will deploy to PRODUCTION. All CI checks passed. Proceed?"
     on_failure:
       continue: false
       cmds:

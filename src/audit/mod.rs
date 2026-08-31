@@ -2,6 +2,7 @@ pub mod builder;
 pub mod sinks;
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -40,12 +41,19 @@ pub struct AuditEvent {
     pub caller: CallerKind,
     pub action: AuditAction,
     pub task: String,
+    /// Name of the job this task ran as part of, if any. `None` for a
+    /// standalone task run (CLI or MCP) — jobs are never MCP-callable.
+    pub job: Option<String>,
     pub project: String,
     pub project_root: String,
     pub risk_level: String,
     pub exit_code: Option<i32>,
     pub duration_ms: Option<u64>,
     pub env_override_keys: Vec<String>,
+    /// Actual values for the subset of overridden env vars the task
+    /// explicitly opted into via `audit.log_env`. Always present (possibly
+    /// empty), and never contains a `secret`-typed var — validation forbids it.
+    pub logged_env: BTreeMap<String, String>,
     pub outcome: AuditOutcome,
     pub meriadoc_version: &'static str,
     pub pid: u32,
@@ -90,12 +98,14 @@ pub fn build_event(
     caller: CallerKind,
     action: AuditAction,
     task: &str,
+    job: Option<&str>,
     project: &str,
     project_root: &Path,
     risk_level: &str,
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
     env_override_keys: Vec<String>,
+    logged_env: BTreeMap<String, String>,
     outcome: AuditOutcome,
 ) -> AuditEvent {
     AuditEvent {
@@ -104,12 +114,14 @@ pub fn build_event(
         caller,
         action,
         task: task.to_string(),
+        job: job.map(|j| j.to_string()),
         project: project.to_string(),
         project_root: project_root.to_string_lossy().into_owned(),
         risk_level: risk_level.to_string(),
         exit_code,
         duration_ms,
         env_override_keys,
+        logged_env,
         outcome,
         meriadoc_version: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
@@ -128,22 +140,53 @@ mod tests {
             CallerKind::McpStdio,
             AuditAction::TaskBlocked,
             "deploy",
+            None,
             "myapp",
             Path::new("/home/user/myapp"),
             "critical",
             None,
             None,
             vec!["ENV".to_string()],
+            BTreeMap::new(),
             AuditOutcome::Blocked,
         );
 
         assert_eq!(event.task, "deploy");
+        assert_eq!(event.job, None);
         assert_eq!(event.project, "myapp");
         assert_eq!(event.risk_level, "critical");
         assert_eq!(event.exit_code, None);
         assert_eq!(event.duration_ms, None);
         assert_eq!(event.env_override_keys, vec!["ENV".to_string()]);
+        assert!(event.logged_env.is_empty());
         assert_eq!(event.schema_version, "1");
+    }
+
+    #[test]
+    fn test_build_event_populates_job_and_logged_env() {
+        let mut logged_env = BTreeMap::new();
+        logged_env.insert("QUERY".to_string(), "invoice deadline".to_string());
+
+        let event = build_event(
+            CallerKind::Cli,
+            AuditAction::TaskRun,
+            "ci-deploy-prod",
+            Some("deploy-production"),
+            "myapp",
+            Path::new("/home/user/myapp"),
+            "high",
+            Some(0),
+            Some(42),
+            vec!["QUERY".to_string()],
+            logged_env,
+            AuditOutcome::Success,
+        );
+
+        assert_eq!(event.job, Some("deploy-production".to_string()));
+        assert_eq!(
+            event.logged_env.get("QUERY"),
+            Some(&"invoice deadline".to_string())
+        );
     }
 
     #[derive(Default)]
@@ -167,12 +210,14 @@ mod tests {
             CallerKind::Cli,
             AuditAction::TaskRun,
             "build",
+            None,
             "demo",
             Path::new("/tmp/demo"),
             "low",
             Some(0),
             Some(1),
             vec![],
+            BTreeMap::new(),
             AuditOutcome::Success,
         );
         logger.emit(&event);
@@ -187,12 +232,14 @@ mod tests {
             CallerKind::Cli,
             AuditAction::TaskRun,
             "build",
+            None,
             "demo",
             Path::new("/tmp/demo"),
             "low",
             Some(0),
             Some(1),
             vec![],
+            BTreeMap::new(),
             AuditOutcome::Success,
         );
         logger.emit(&event);

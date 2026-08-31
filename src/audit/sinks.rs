@@ -54,12 +54,14 @@ mod tests {
             CallerKind::Cli,
             AuditAction::TaskRun,
             "build",
+            None,
             "demo",
             Path::new("/tmp/demo"),
             "low",
             Some(0),
             Some(12),
             vec![],
+            std::collections::BTreeMap::new(),
             AuditOutcome::Success,
         )
     }

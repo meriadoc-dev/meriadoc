@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
-use crate::audit::{AuditAction, AuditOutcome, CallerKind, build_event};
+use crate::audit::{AuditAction, AuditEvent, AuditOutcome, CallerKind, build_event};
 use crate::cli::{CliPrompter, EditableVar, EnvPrompter, InteractiveMode, RunKind, RunOptions};
 use crate::config::spec::CacheConfig;
 use crate::core::execution::{
@@ -10,9 +10,66 @@ use crate::core::execution::{
     WorkdirMode,
 };
 use crate::core::resolver::EntityResolver;
-use crate::core::spec::{ConditionSpec, EnvVarSpec};
+use crate::core::spec::{ConditionSpec, EnvVarSpec, TaskSpec};
 use crate::core::validation::MeriadocError;
 use crate::repo::{SavedEnvStore, ValidationCache, project_cache_dir};
+
+/// Builds an audit event for a single task execution, applying the task's
+/// `audit.log_env` opt-in list to decide which overridden env var values (if
+/// any) get included. Shared by every execution path (standalone CLI task,
+/// task-within-a-job, and MCP) so `audit.log_env` behaves identically
+/// regardless of caller.
+#[allow(clippy::too_many_arguments)]
+pub fn build_task_audit_event(
+    task_spec: &TaskSpec,
+    caller: CallerKind,
+    action: AuditAction,
+    name: &str,
+    job: Option<&str>,
+    project_name: &str,
+    project_root: &Path,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+    cli_env: &[(String, String)],
+    outcome: AuditOutcome,
+) -> AuditEvent {
+    let risk_level = task_spec
+        .agent
+        .as_ref()
+        .map(|a| a.risk_level.as_str())
+        .unwrap_or("low");
+
+    let env_override_keys: Vec<String> = cli_env.iter().map(|(k, _)| k.clone()).collect();
+
+    let logged_env: BTreeMap<String, String> = task_spec
+        .audit
+        .as_ref()
+        .map(|a| a.log_env.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|name| {
+            cli_env
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(k, v)| (k.clone(), v.clone()))
+        })
+        .collect();
+
+    build_event(
+        caller,
+        action,
+        name,
+        job,
+        project_name,
+        project_root,
+        risk_level,
+        exit_code,
+        duration_ms,
+        env_override_keys,
+        logged_env,
+        outcome,
+    )
+}
 
 /// Result of environment resolution, including any issues found.
 struct EnvResult {
@@ -119,24 +176,18 @@ pub fn handle_run(
     {
         let project_name = EntityResolver::project_name(resolved.project).to_string();
         let project_root = resolved.project.root.clone();
-        let risk_level = resolved
-            .spec
-            .agent
-            .as_ref()
-            .map(|a| a.risk_level.as_str())
-            .unwrap_or("low");
-        let env_override_keys: Vec<String> = options.env.iter().map(|(k, _)| k.clone()).collect();
         let event = if options.dry_run {
-            build_event(
+            build_task_audit_event(
+                resolved.spec,
                 CallerKind::Cli,
                 AuditAction::TaskDryRun,
                 &name,
+                None,
                 &project_name,
                 &project_root,
-                risk_level,
                 None,
                 None,
-                env_override_keys,
+                &options.env,
                 AuditOutcome::DryRun,
             )
         } else {
@@ -145,16 +196,17 @@ pub fn handle_run(
             } else {
                 AuditOutcome::Failure
             };
-            build_event(
+            build_task_audit_event(
+                resolved.spec,
                 CallerKind::Cli,
                 AuditAction::TaskRun,
                 &name,
+                None,
                 &project_name,
                 &project_root,
-                risk_level,
                 Some(exit_code),
                 Some(duration_ms),
-                env_override_keys,
+                &options.env,
                 outcome,
             )
         };
@@ -665,6 +717,21 @@ impl RunActions {
                     let interpolated = CommandRunner::interpolate_command(cmd, &task_env);
                     Self::print_command_with_interpolation(i + 1, cmd, &interpolated);
                 }
+
+                let event = build_task_audit_event(
+                    task_spec,
+                    CallerKind::Cli,
+                    AuditAction::TaskDryRun,
+                    task_name,
+                    Some(name),
+                    project_name,
+                    &resolved.project.root,
+                    None,
+                    None,
+                    &options.env,
+                    AuditOutcome::DryRun,
+                );
+                app.audit_logger.emit(&event);
             }
 
             return Ok(0);
@@ -721,12 +788,39 @@ impl RunActions {
 
             // Execute task commands
             println!("  Running task: {}", task_name);
+            let task_start = std::time::Instant::now();
             let results = CommandRunner::run_commands_with_options(
                 &task_spec.cmds,
                 &workdir,
                 &final_env,
                 &exec_options,
             )?;
+            let task_duration_ms = task_start.elapsed().as_millis() as u64;
+
+            let task_outcome = if results.iter().all(|r| r.success) {
+                AuditOutcome::Success
+            } else {
+                AuditOutcome::Failure
+            };
+            let task_exit_code = results
+                .iter()
+                .find(|r| !r.success)
+                .map(|r| r.exit_code)
+                .unwrap_or(0);
+            let event = build_task_audit_event(
+                task_spec,
+                CallerKind::Cli,
+                AuditAction::TaskRun,
+                task_name,
+                Some(name),
+                project_name,
+                &resolved.project.root,
+                Some(task_exit_code),
+                Some(task_duration_ms),
+                &options.env,
+                task_outcome,
+            );
+            app.audit_logger.emit(&event);
 
             // Check for failure
             if let Some(result) = results.iter().find(|r| !r.success) {
@@ -1090,37 +1184,60 @@ pub fn run_task_for_mcp(
     };
 
     // Resolve task metadata for audit (cheap, no I/O)
-    let (project_name, project_root, risk_level) =
+    let (project_name, project_root) =
         if let Ok(resolved) = EntityResolver::resolve_task(name, &app.projects) {
             (
                 EntityResolver::project_name(resolved.project).to_string(),
                 resolved.project.root.clone(),
-                resolved
-                    .spec
-                    .agent
-                    .as_ref()
-                    .map(|a| a.risk_level.as_str())
-                    .unwrap_or("low")
-                    .to_string(),
             )
         } else {
-            (String::new(), std::path::PathBuf::new(), "low".to_string())
+            (String::new(), std::path::PathBuf::new())
         };
-    let env_override_keys: Vec<String> = cli_env.iter().map(|(k, _)| k.clone()).collect();
+
+    // Builds the audit event for this call, re-resolving the task spec fresh
+    // (cheap, no I/O) so `audit.log_env` is respected without holding a
+    // borrow of `app.projects` across the `&mut App` calls below.
+    let build_this_event = |app: &App, action, exit_code, duration_ms, outcome| {
+        if let Ok(resolved) = EntityResolver::resolve_task(name, &app.projects) {
+            build_task_audit_event(
+                resolved.spec,
+                caller,
+                action,
+                name,
+                None,
+                &project_name,
+                &project_root,
+                exit_code,
+                duration_ms,
+                cli_env,
+                outcome,
+            )
+        } else {
+            build_event(
+                caller,
+                action,
+                name,
+                None,
+                &project_name,
+                &project_root,
+                "low",
+                exit_code,
+                duration_ms,
+                cli_env.iter().map(|(k, _)| k.clone()).collect(),
+                BTreeMap::new(),
+                outcome,
+            )
+        }
+    };
 
     // For dry-run, emit event and return preview
     if dry_run {
         let result = run_task_dry_run_for_mcp(app, name, &options, mode);
-        let event = build_event(
-            caller,
+        let event = build_this_event(
+            app,
             AuditAction::TaskDryRun,
-            name,
-            &project_name,
-            &project_root,
-            &risk_level,
             None,
             None,
-            env_override_keys,
             AuditOutcome::DryRun,
         );
         app.audit_logger.emit(&event);
@@ -1139,29 +1256,19 @@ pub fn run_task_for_mcp(
             } else {
                 AuditOutcome::Failure
             };
-            build_event(
-                caller,
+            build_this_event(
+                app,
                 AuditAction::TaskRun,
-                name,
-                &project_name,
-                &project_root,
-                &risk_level,
                 Some(result.exit_code),
                 Some(duration_ms),
-                env_override_keys,
                 outcome,
             )
         }
-        Err(_) => build_event(
-            caller,
+        Err(_) => build_this_event(
+            app,
             AuditAction::TaskRun,
-            name,
-            &project_name,
-            &project_root,
-            &risk_level,
             Some(1),
             Some(duration_ms),
-            env_override_keys,
             AuditOutcome::Failure,
         ),
     };
